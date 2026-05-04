@@ -73,9 +73,9 @@ class DmxDualMonitor:
         if dt > 0.001:
             self.fps_buffer.append(dt)
 
-        if len(self.fps_buffer) > 10:
+        if len(self.fps_buffer) > 70:
             fps = 1 / (sum(self.fps_buffer) / len(self.fps_buffer))
-            self.lbl_fps.config(text=f"{fps:.1f} FPS")
+            self.lbl_fps.config(text=f"{round(fps / 5) * 5} FPS")
             self.lbl_info.config(text=f"Trame reçue : {len(self.dmx_frame)} canaux")
 
         for i in range(min(len(self.dmx_frame), NB_TOTAL_AFFICHER)):
