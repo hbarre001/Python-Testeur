@@ -7,137 +7,150 @@ from collections import deque
 
 # --- CONFIGURATION ---
 BAUD_RATE = 250000
-NB_TOTAL_AFFICHER = 40
+NB_TOTAL_AFFICHER = 512 
 MARQUEUR_SYNC = 0xFE
 
 class DmxDualMonitor:
     def __init__(self, root, serial_port):
         self.root = root
         self.ser = serial_port
-        self.root.title("DMX Analyzer - Double Rack (1-40)")
-        self.root.geometry("900x700")
+        self.root.title("DMX Analyzer - 512 Canaux")
+        self.root.geometry("1150x850")
         self.root.configure(bg="#121212")
         
-        # Variables
+        self.running = True
         self.dmx_frame = []
         self.last_time = time.time()
-        self.fps_buffer = deque(maxlen=75)
+        self.fps_buffer = deque(maxlen=50)
+
+        # Gérer la fermeture propre
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
         # --- Header ---
-        self.lbl_fps = tk.Label(root, text="-- FPS", font=("Consolas", 22, "bold"), bg="#121212", fg="#00ff00")
-        self.lbl_fps.pack(pady=10)
+        header = tk.Frame(root, bg="#121212")
+        header.pack(fill="x", pady=10)
+        self.lbl_fps = tk.Label(header, text="-- FPS", font=("Consolas", 22, "bold"), bg="#121212", fg="#00ff00")
+        self.lbl_fps.pack()
         
-        self.lbl_info = tk.Label(root, text=f"Connecté sur {self.ser.port}", font=("Consolas", 10), bg="#121212", fg="#888888")
-        self.lbl_info.pack()
+        # --- Zone Canvas ---
+        self.container = tk.Frame(root, bg="#121212")
+        self.container.pack(fill="both", expand=True, padx=5, pady=5)
+        self.canvas = tk.Canvas(self.container, bg="#000000", highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.container, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.scrollbar.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
 
-        # --- Zone Graphique ---
-        self.canvas = tk.Canvas(root, width=850, height=550, bg="#000000", highlightthickness=0)
-        self.canvas.pack(pady=10)
-        
         self.bars = []
-        
-        # Création des deux rangées
-        for rangee in range(2): 
-            y_base = 250 + (rangee * 260) 
-            for i in range(20):
-                canal_idx = (rangee * 20) + i
-                x0 = i * 42 + 15
-                self.canvas.create_rectangle(x0, y_base-200, x0 + 32, y_base, outline="#222", fill="#111")
-                bar = self.canvas.create_rectangle(x0, y_base, x0 + 32, y_base, fill="#00d4ff", outline="")
-                self.bars.append(bar)
-                self.canvas.create_text(x0 + 16, y_base + 15, text=f"{canal_idx + 1}", fill="#666", font=("Arial", 9))
+        self.setup_grid()
+        self.canvas.update_idletasks()
+        self.canvas.config(scrollregion=self.canvas.bbox("all"))
 
-        # Lancement de la boucle de mise à jour
+        # Lancer la boucle
         self.run_update()
 
+    def setup_grid(self):
+        canaux_par_ligne = 32
+        largeur_barre = 18
+        espacement_x = 32
+        espacement_y = 150
+        h_max = 80
+        for i in range(NB_TOTAL_AFFICHER):
+            ligne, col = i // canaux_par_ligne, i % canaux_par_ligne
+            x0, y_base = col * espacement_x + 45, (ligne + 1) * espacement_y 
+            self.canvas.create_rectangle(x0, y_base - h_max, x0 + largeur_barre, y_base, outline="#1a1a1a", fill="#0a0a0a")
+            bar = self.canvas.create_rectangle(x0, y_base, x0 + largeur_barre, y_base, fill="#00d4ff", outline="")
+            self.bars.append(bar)
+            self.canvas.create_text(x0 + largeur_barre/2, y_base + 15, text=f"{i + 1}", fill="#555", font=("Arial", 7))
+
+    def on_closing(self):
+        self.running = False
+        try:
+            self.ser.close()
+        except:
+            pass
+        self.root.destroy()
+
     def run_update(self):
+        if not self.running: return
+        
         try:
             if self.ser.in_waiting > 0:
+                # Lecture de tout le buffer disponible
                 data = self.ser.read(self.ser.in_waiting)
                 for byte in data:
-                    if byte == MARQUEUR_SYNC: # Détection du marqueur 0xFE de l'Arduino
-                        self.update_visuals()
+                    if byte == MARQUEUR_SYNC:
+                        if self.dmx_frame:
+                            self.update_visuals()
                         self.dmx_frame = []
                     else:
-                        self.dmx_frame.append(byte)
+                        if len(self.dmx_frame) < 512:
+                            self.dmx_frame.append(byte)
         except Exception as e:
-            print(f"Erreur lecture : {e}")
-            
-        self.root.after(5, self.run_update)
+            print(f"Erreur série: {e}")
+
+        # On laisse un peu de temps au système (10ms) pour ne pas figer l'interface
+        self.root.after(10, self.run_update)
 
     def update_visuals(self):
+        if not self.running: return
+        
         now = time.time()
-        dt = now - self.last_time
+        self.fps_buffer.append(now - self.last_time)
         self.last_time = now
 
-        if dt > 0.001:
-            self.fps_buffer.append(dt)
-
-        if len(self.fps_buffer) > 70:
+        if len(self.fps_buffer) >= 20:
             fps = 1 / (sum(self.fps_buffer) / len(self.fps_buffer))
-            self.lbl_fps.config(text=f"{round(fps / 5) * 5} FPS")
-            self.lbl_info.config(text=f"Trame reçue : {len(self.dmx_frame)} canaux")
+            self.lbl_fps.config(text=f"{int(fps)} FPS")
 
-        for i in range(min(len(self.dmx_frame), NB_TOTAL_AFFICHER)):
-            val = self.dmx_frame[i]
-            h = int((val / 255) * 200) 
-            rangee = i // 20
-            y_base = 250 + (rangee * 260)
-            x0 = (i % 20) * 42 + 15
-            self.canvas.coords(self.bars[i], x0, y_base - h, x0 + 32, y_base)
-            color = "#%02x%02x%02x" % (val, 180 + (val//4), 255)
-            self.canvas.itemconfig(self.bars[i], fill=color)
+        h_max = 80
+        for i in range(NB_TOTAL_AFFICHER):
+            val = self.dmx_frame[i] if i < len(self.dmx_frame) else 0
+            h = int((val / 255) * h_max)
+            
+            # Mise à jour graphique sécurisée
+            try:
+                coords = self.canvas.coords(self.bars[i])
+                self.canvas.coords(self.bars[i], coords[0], coords[3] - h, coords[2], coords[3])
+                color = "#%02x%02x%02x" % (val, min(160 + val, 255), 255) if val > 0 else "#111"
+                self.canvas.itemconfig(self.bars[i], fill=color)
+            except:
+                break
 
 class SerialSelector:
     def __init__(self, root):
         self.root = root
-        self.root.title("Connexion DMX")
-        self.root.geometry("350x200")
-        self.root.configure(bg="#1e1e1e")
-
-        tk.Label(root, text="SÉLECTEUR PORT COM", font=("Arial", 12, "bold"), bg="#1e1e1e", fg="white").pack(pady=15)
-
+        self.root.title("DMX Connexion")
+        self.root.geometry("400x200")
+        
+        tk.Label(root, text="SÉLECTION DU PORT DMX", pady=20).pack()
         self.port_var = tk.StringVar()
         self.combo = ttk.Combobox(root, textvariable=self.port_var, state="readonly")
-        self.combo.pack(pady=10, padx=20, fill='x')
-
-        btn_frame = tk.Frame(root, bg="#1e1e1e")
-        btn_frame.pack(pady=15)
+        self.combo.pack(pady=10, padx=40, fill='x')
         
-        tk.Button(btn_frame, text="Actualiser", command=self.refresh_ports, bg="#333", fg="white").pack(side=tk.LEFT, padx=10)
-        tk.Button(btn_frame, text="Lancer l'Analyseur", command=self.start_app, bg="#00d4ff", fg="black", font=("Arial", 10, "bold")).pack(side=tk.LEFT, padx=10)
-
+        btn_frame = tk.Frame(root)
+        btn_frame.pack(pady=20)
+        tk.Button(btn_frame, text="Actualiser", command=self.refresh_ports).pack(side=tk.LEFT, padx=10)
+        tk.Button(btn_frame, text="Lancer", command=self.start_app, bg="#00d4ff").pack(side=tk.LEFT, padx=10)
+        
         self.refresh_ports()
 
     def refresh_ports(self):
         ports = serial.tools.list_ports.comports()
-        port_list = [p.device for p in ports]
-        self.combo['values'] = port_list
-        if port_list:
-            self.combo.current(0)
+        self.combo['values'] = [p.device for p in ports]
+        if self.combo['values']: self.combo.current(0)
 
     def start_app(self):
-        selected_port = self.port_var.get()
-        if not selected_port:
-            messagebox.showwarning("Erreur", "Veuillez sélectionner un port COM.")
-            return
-
+        port = self.port_var.get()
+        if not port: return
         try:
-            # Ouverture du port à 250000 bauds selon ta documentation[cite: 1]
-            ser = serial.Serial(selected_port, BAUD_RATE, timeout=0)
-            
-            # On détruit l'interface de sélection
-            for widget in self.root.winfo_children():
-                widget.destroy()
-            
-            # On lance l'application principale dans la même fenêtre
+            ser = serial.Serial(port, BAUD_RATE, timeout=0)
+            for widget in self.root.winfo_children(): widget.destroy()
             DmxDualMonitor(self.root, ser)
-            
         except Exception as e:
-            messagebox.showerror("Erreur Port", f"Impossible d'ouvrir {selected_port}\n{e}")
+            messagebox.showerror("Erreur", str(e))
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # On commence par l'interface de sélection[cite: 1]
-    selector = SerialSelector(root)
+    app = SerialSelector(root)
     root.mainloop()
